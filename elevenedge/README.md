@@ -1,71 +1,55 @@
 # ElevenEdge MVP
 
-ElevenEdge is an AI-powered clipping backend + Discord bot for finding moments in long videos and instantly generating clips.
+ElevenEdge is a Discord + FastAPI assistant that helps you:
+1. Upload a long video.
+2. Transcribe it with OpenAI Whisper API.
+3. Search the transcript for moments.
+4. Generate MP4 clips with FFmpeg.
 
-## Architecture highlights
+This version is designed to run locally with **3 processes**:
+- API server
+- transcription worker
+- Discord bot
 
-- **Human-in-the-loop**: user selects search results and explicitly requests clip creation.
-- **No redundant processing**: SHA256 video hash prevents duplicate transcription.
-- **Modular services**: ingest, transcription, search, clipping split into separate modules.
-- **Worker queue ready for scale**: in-memory queue now, can be swapped with Redis/SQS later.
+---
 
-## Project layout
+## 1) Project compatibility fixes (what changed)
 
-```text
-elevenedge/
-  app/
-    main.py
-    config.py
-    database.py
-    models.py
-    services/
-      video_ingest.py
-      transcription.py
-      search.py
-      clipping.py
-    api/
-      routes_video.py
-      routes_search.py
-      routes_clip.py
-  bot/
-    discord_bot.py
-  workers/
-    processing_queue.py
-    transcription_worker.py
-  utils/
-    hashing.py
-    ffmpeg_utils.py
-  storage/
-    videos/
-    clips/
-  requirements.txt
-  README.md
-```
+To make the MVP run end-to-end reliably, this project now uses:
 
-## Environment variables
+- **Supabase-backed job queue** using `VIDEOS.status` (`uploaded`, `processing`, `transcribed`) instead of in-memory Python queue.
+- **OpenAI Whisper API** (`whisper-1`) instead of local model loading.
+- **Dedicated `TRANSCRIPTS` table** for transcript text + segment timestamps.
+- **Fixed clip API response shape** so `clip_id` is returned correctly.
+- **Clear bot status messages** for `/upload`, `/search`, and `/clip`.
 
-Create `.env` in repo root:
+---
 
-```bash
-SUPABASE_URL=https://your-project-id.supabase.co
-SUPABASE_KEY=your-service-role-or-anon-key
-DISCORD_TOKEN=your-discord-bot-token
-ELEVENEDGE_API_BASE_URL=http://localhost:8000
-```
+## 2) Database setup (Supabase SQL)
 
-## Supabase schema
-
-Run this in Supabase SQL editor:
+Run this SQL in your Supabase SQL editor:
 
 ```sql
 create table if not exists "VIDEOS" (
   id bigint generated always as identity primary key,
   video_hash text unique not null,
   filename text not null,
+  status text not null default 'uploaded' check (status in ('uploaded', 'processing', 'transcribed')),
   duration double precision,
-  transcript_text text,
-  transcript_segments jsonb default '[]'::jsonb,
-  created_at timestamptz default now()
+  processing_error text,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create table if not exists "TRANSCRIPTS" (
+  id bigint generated always as identity primary key,
+  video_id bigint not null unique references "VIDEOS"(id) on delete cascade,
+  transcript_text text not null,
+  transcript_segments jsonb not null default '[]'::jsonb,
+  language text,
+  duration double precision,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
 );
 
 create table if not exists "CLIPS" (
@@ -74,7 +58,7 @@ create table if not exists "CLIPS" (
   start_time double precision not null,
   end_time double precision not null,
   clip_path text not null,
-  created_at timestamptz default now()
+  created_at timestamptz not null default now()
 );
 
 create table if not exists "QUERIES" (
@@ -82,11 +66,38 @@ create table if not exists "QUERIES" (
   video_id bigint not null references "VIDEOS"(id) on delete cascade,
   query_text text not null,
   matched_segments jsonb not null,
-  created_at timestamptz default now()
+  created_at timestamptz not null default now()
 );
+
+create index if not exists videos_status_created_at_idx on "VIDEOS"(status, created_at);
+create index if not exists transcripts_video_id_idx on "TRANSCRIPTS"(video_id);
+create index if not exists clips_video_id_idx on "CLIPS"(video_id);
+create index if not exists queries_video_id_idx on "QUERIES"(video_id);
 ```
 
-## Setup
+---
+
+## 3) Environment configuration
+
+Create a `.env` file in the repository root:
+
+```bash
+SUPABASE_URL=https://YOUR_PROJECT_ID.supabase.co
+SUPABASE_KEY=YOUR_SUPABASE_SERVICE_ROLE_KEY
+OPENAI_API_KEY=sk-...
+DISCORD_BOT_TOKEN=YOUR_DISCORD_BOT_TOKEN
+ELEVENEDGE_API_BASE_URL=http://localhost:8000
+```
+
+Where to get these values:
+- `SUPABASE_URL`: Supabase project settings → API URL.
+- `SUPABASE_KEY`: Supabase project settings → API keys (service role key recommended for server-side).
+- `OPENAI_API_KEY`: OpenAI dashboard → API keys.
+- `DISCORD_BOT_TOKEN`: Discord Developer Portal → your bot → token.
+
+---
+
+## 4) Local setup
 
 ```bash
 python3.11 -m venv .venv
@@ -94,34 +105,69 @@ source .venv/bin/activate
 pip install -r elevenedge/requirements.txt
 ```
 
-Make sure FFmpeg is installed and available on PATH.
+Install FFmpeg (required):
+- Ubuntu/Debian: `sudo apt-get install ffmpeg`
+- macOS (Homebrew): `brew install ffmpeg`
 
-## Run API and worker
+---
 
-```bash
-export PYTHONPATH=elevenedge
-uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
-python -m workers.transcription_worker
-```
+## 5) Run the system (3 terminals)
 
-## Run Discord bot
+In each terminal, run:
 
 ```bash
+source .venv/bin/activate
 export PYTHONPATH=elevenedge
-python -m bot.discord_bot
 ```
 
-## Example API requests
+### Terminal A: API server
+```bash
+python elevenedge/app/main.py
+```
+
+### Terminal B: worker
+```bash
+python elevenedge/workers/transcription_worker.py
+```
+
+### Terminal C: Discord bot
+```bash
+python elevenedge/bot/discord_bot.py
+```
+
+---
+
+## 6) How the queue works
+
+- `/upload` creates a `VIDEOS` row with `status='uploaded'`.
+- Worker polls Supabase for oldest uploaded video.
+- Worker claims it (`status='processing'`), transcribes audio via Whisper API, writes `TRANSCRIPTS`, then marks video `transcribed`.
+- If transcription fails, worker stores `processing_error` and resets status to `uploaded` for retry.
+
+---
+
+## 7) Discord commands
+
+### `/upload`
+Uploads a video to the backend and starts processing.
+
+### `/search`
+Searches transcript segments by keywords and returns timestamped matches.
+
+### `/clip`
+Creates a clip with pre/post roll and uploads the resulting MP4 file in Discord.
+
+---
+
+## 8) API examples
 
 ### Upload video
-
 ```bash
 curl -X POST http://localhost:8000/videos/upload \
   -F "video=@/path/to/video.mp4"
 ```
 
 ### Search transcript
-
 ```bash
 curl -X POST http://localhost:8000/search/videos/1 \
   -H "Content-Type: application/json" \
@@ -129,16 +175,21 @@ curl -X POST http://localhost:8000/search/videos/1 \
 ```
 
 ### Generate clip
-
 ```bash
 curl -X POST http://localhost:8000/clips/videos/1 \
   -H "Content-Type: application/json" \
   -d '{"start":132.4,"end":136.7,"pre_roll_seconds":5,"post_roll_seconds":5}'
 ```
 
-## Notes for MVP production readiness
+---
 
-- Add authentication/authorization before external release.
-- Move queue from memory to durable broker (Redis/SQS/Celery/RQ).
-- Persist clips/videos to Supabase Storage or S3 for distributed deployment.
-- Add retries + structured logging + observability for worker jobs.
+## 9) Testing the full workflow in Discord
+
+1. Start API, worker, and bot.
+2. In your Discord server, run `/upload` with a test video.
+3. Wait until the worker logs a success message.
+4. Run `/search video_id:<id> query:<phrase>`.
+5. Pick a returned timestamp and run `/clip video_id:<id> start:<seconds> end:<seconds>`.
+6. Confirm the bot uploads a playable MP4 clip.
+
+If `/search` returns no results, wait a little longer or try a simpler query.

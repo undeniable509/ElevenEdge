@@ -22,8 +22,12 @@ class SearchService:
         if not video:
             return []
 
+        transcript = self.repository.get_transcript(video_id)
+        if not transcript:
+            return []
+
         keywords = [k.lower() for k in query.split() if k.strip()]
-        segments = video.get('transcript_segments') or []
+        segments = transcript.get('transcript_segments') or []
 
         scored: list[tuple[int, dict[str, Any]]] = []
         for segment in segments:

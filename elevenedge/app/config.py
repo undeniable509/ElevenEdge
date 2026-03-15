@@ -15,15 +15,16 @@ class Settings(BaseSettings):
 
     supabase_url: str = Field(..., alias='SUPABASE_URL')
     supabase_key: str = Field(..., alias='SUPABASE_KEY')
+    openai_api_key: str = Field(..., alias='OPENAI_API_KEY')
 
-    whisper_model: str = 'base'
+    whisper_model: str = 'whisper-1'
     storage_root: Path = Path('elevenedge/storage')
     videos_dir_name: str = 'videos'
     clips_dir_name: str = 'clips'
     audio_cache_dir_name: str = 'audio'
 
-    discord_token: str | None = None
-    worker_poll_interval_seconds: float = 1.0
+    discord_bot_token: str | None = Field(default=None, alias='DISCORD_BOT_TOKEN')
+    worker_poll_interval_seconds: float = 2.0
 
     def videos_dir(self) -> Path:
         return self.storage_root / self.videos_dir_name
