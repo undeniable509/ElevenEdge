@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from pathlib import Path
-
 from app.config import get_settings
 from app.database import SupabaseRepository
 from utils.ffmpeg_utils import generate_clip
@@ -23,11 +21,16 @@ class ClippingService:
         video = self.repository.get_video(video_id)
         if not video:
             raise ValueError(f'Video {video_id} not found')
+        if end <= start:
+            raise ValueError('end must be greater than start')
 
         adjusted_start = max(0.0, start - pre_roll_seconds)
         adjusted_end = max(adjusted_start + 0.1, end + post_roll_seconds)
 
         video_path = self.settings.videos_dir() / video['filename']
+        if not video_path.exists():
+            raise ValueError(f'Video file not found on disk: {video_path}')
+
         output_name = f"{video_id}_{adjusted_start:.2f}_{adjusted_end:.2f}.mp4"
         output_path = self.settings.clips_dir() / output_name
 

@@ -1,13 +1,10 @@
 from __future__ import annotations
 
-from pathlib import Path
-
 from fastapi import UploadFile
 
 from app.config import get_settings
 from app.database import SupabaseRepository
 from utils.hashing import sha256_for_file
-from workers.processing_queue import TranscriptionJob, processing_queue
 
 
 class VideoIngestService:
@@ -30,8 +27,8 @@ class VideoIngestService:
             return {
                 'video_id': existing['id'],
                 'video_hash': video_hash,
-                'status': 'reused_existing_video',
-                'reused_transcript': True,
+                'status': existing.get('status', 'uploaded'),
+                'reused_transcript': existing.get('status') == 'transcribed',
             }
 
         canonical_path = self.settings.videos_dir() / f'{video_hash}_{upload.filename}'
@@ -42,17 +39,14 @@ class VideoIngestService:
                 'video_hash': video_hash,
                 'filename': canonical_path.name,
                 'duration': None,
-                'transcript_text': None,
-                'transcript_segments': [],
+                'status': 'uploaded',
+                'processing_error': None,
             }
-        )
-        processing_queue.enqueue_transcription(
-            TranscriptionJob(video_id=created['id'], video_path=str(canonical_path))
         )
 
         return {
             'video_id': created['id'],
             'video_hash': video_hash,
-            'status': 'queued_for_transcription',
+            'status': created['status'],
             'reused_transcript': False,
         }

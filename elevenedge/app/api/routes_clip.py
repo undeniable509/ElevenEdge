@@ -23,6 +23,8 @@ def create_clip(
             post_roll_seconds=request.post_roll_seconds,
         )
     except ValueError as error:
-        raise HTTPException(status_code=404, detail=str(error)) from error
+        detail = str(error)
+        status_code = 404 if 'not found' in detail.lower() else 400
+        raise HTTPException(status_code=status_code, detail=detail) from error
 
     return ClipResponse(**clip)

@@ -1,7 +1,7 @@
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class TranscriptSegment(BaseModel):
@@ -14,10 +14,21 @@ class VideoRow(BaseModel):
     id: int
     video_hash: str
     filename: str
+    status: Literal['uploaded', 'processing', 'transcribed']
     duration: float | None = None
-    transcript_text: str | None = None
-    transcript_segments: list[dict[str, Any]] | None = None
+    processing_error: str | None = None
     created_at: datetime | None = None
+
+
+class TranscriptRow(BaseModel):
+    id: int
+    video_id: int
+    transcript_text: str
+    transcript_segments: list[dict[str, Any]]
+    language: str | None = None
+    duration: float | None = None
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
 
 
 class ClipRow(BaseModel):
@@ -70,7 +81,9 @@ class ClipRequest(BaseModel):
 
 
 class ClipResponse(BaseModel):
-    clip_id: int
+    model_config = ConfigDict(populate_by_name=True)
+
+    clip_id: int = Field(alias='id')
     video_id: int
     clip_path: str
     start_time: float
